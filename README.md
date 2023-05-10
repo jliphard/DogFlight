@@ -13,15 +13,17 @@ PixRacer Firmware for High Power Rockets with Actuator Dual Deploy and AHRS
   
 ## Motivation
 
-The open source drone community has developed sophisticated hardware and software. Examples include the [PixHawk](https://pixhawk.org) open standard for drone hardware (in particular, the FMU, flight management unit) and the [Ardupilot](https://ardupilot.org) open source autopilot system supporting multi-copters, helicopters, fixed wing aircraft, boats, submarines, and rovers. In amateur rocketry, however, there is currently a lack of open community standards for hardware, such as flight computers for dual deploy and thrust vector control, and open source software that runs on that hardware. 
+The open source drone community has developed sophisticated hardware and software. Examples include the [PixHawk](https://pixhawk.org) open standard for drone hardware (in particular, the FMU, flight management unit) and the [Ardupilot](https://ardupilot.org) open source autopilot system supporting multi-copters, submarines, and rovers. In amateur rocketry, however, there is currently a lack of open community standards for hardware, especially flight computers for dual deploy and thrust vector control, and open source software that runs on that hardware. 
 
 **Why the strange name?** The firmware was developed for a Journey 75 rocket named "Beware of Dog" built for L1 certification.
 
 ## Is writing your own firmware for amateur high power rockets a good idea?
 
-For many dual deploy situations, you will be better off using off the shelf hardware/software with long real world soak time, such as an [Eggtimer Quantum](http://eggtimerrocketry.com/eggtimer-quantum-support/) with ["official" firmware](http://eggtimerrocketry.com/wp-content/uploads/2022/07/Quantum_1_09c.zip). However, if your focus is on STEM, education, and creating new things, then at some point you will run up against limitations imposed by closed hardware/software solutions. As I was building a rocket with my kids, I wanted to avoid the complexity/risk of pyro deploy charges and instead build a deployment mechanism based on springs or linear actuators. My main goal was to develop a flight control systems kids can understand (even at the middle school level), play with, and actively help to design and build. A simple control logic for rockets can be used to motivate being good at math; help to explain forces and accelerations; and teach basic aspects of using sensors to reliably make sense of the world. 
+For many dual deploy situations, you will be better off using off the shelf hardware/software with long real world soak time, such as an [Eggtimer Quantum](http://eggtimerrocketry.com/eggtimer-quantum-support/) with ["official" firmware](http://eggtimerrocketry.com/wp-content/uploads/2022/07/Quantum_1_09c.zip). 
 
-So if you you care mostly about reliability and are using traditional pyro dual deploy, this firmware is probably not what you want to be using. However, if you are working with students at any level, including at the university level, this firmware could be a good first code base for you to review and use. Indeed, students at the [Stanford Student Space Initiative (SSI)](https://ssi-wiki.stanford.edu/Main_Page) expressed great interest in open source flight control software. 
+However, if your focus is on STEM, education, and creating new things, then at some point you will run up against limitations imposed by closed hardware/software solutions. As I was building a rocket with my kids, I wanted to avoid the complexity/risk of pyro deploy charges and instead build a deployment mechanism based on springs or linear actuators. My main goal was to develop a flight control system kids can understand (even at the middle school level), play with, and actively help to design and build. A simple control logic for rockets can be used to motivate being good at math; help to explain forces and accelerations; and teach basic aspects of using sensors to reliably make sense of the world. 
+
+So if you care mostly about reliability and are using traditional pyro dual deploy, this firmware is probably not what you want to be using. However, if you are working with students at any level, including at the university level, this firmware could be a good first code base for you to review and use. Indeed, students at the [Stanford Student Space Initiative (SSI)](https://ssi-wiki.stanford.edu/Main_Page) expressed great interest in open source flight control software. 
 
 ## PixHawk and PixRacer drone controllers as rocket flight controllers
 
@@ -87,8 +89,4 @@ float launch_threshold_accel_G = 3.0;
 float apogee_threshold_accel_G = 0.3;
 float apogee_threshold_noise = 0.2;
 ```
-
-
-
-
 
