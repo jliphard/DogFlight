@@ -4,8 +4,25 @@
   Jan Liphardt
   (JTLiphardt@gmail.com)
 
-  No warranties of any kind
+  No warranties of any kind - use for whatever you want
 */
+
+// ****************************************
+// FLIGHT CONFIGURATION
+// NOTE: MEL = mission elapsed time
+// MEL starts from zero at launch detection
+
+float emergency_AGL_deploy_everything_m = 400.0;
+// high value due to lag time of Actuonix L12-100
+
+int failsafe_MEL_deploy_drouge_ms = 10000;
+int failsafe_MEL_deploy_main_ms = 15000;
+float launch_threshold_accel_G = 3.0;
+float apogee_threshold_accel_G = 0.3;
+float apogee_threshold_noise = 0.2;
+
+// ****************************************
+// Hardware configuration
 
 // LEDs
 #define LED_RED   PB11
@@ -13,28 +30,34 @@
 #define LED_BLUE  PB3 
 
 // PRESSURE SENSOR
-#include "MS5611_SPI.h"
 #define MS5611_CS   PD7
 #define MS5611_CLK  PB10
 #define MS5611_MISO PB14
 #define MS5611_MOSI PB15
 
+// PWM SERVOS
+#define SERVO_MAIN_PIN   PE13
+#define SERVO_DROUGE_PIN PE14
+
+// Battery Voltage Sense
+#define BATT_VOLT_SENS PA2
+#define VDD_5V_SENS    PA4
+
+// IMU Chip Select
+#define MPU9250_CS PC2
+
+// ****************************************
+// DRIVERS and OBJECTS
+
+// PRESSURE
+#include "MS5611_SPI.h"
 MS5611_SPI MS5611_SPI(MS5611_CS, MS5611_MOSI, MS5611_MISO, MS5611_CLK);
 uint32_t start, stop, masterCount, mainLoopTimeLast, mainLoopTimeDiff;
-
-#include "RunningAverage.h"
-// used for basic pressure averaging
-RunningAverage pressure_AVE10_mbar(10);
-// used for basic acceleration averaging
-RunningAverage acceleration_AVE10_g(10);
 
 // PWM OUTPUTS
 #include <Servo.h>
 Servo drougeServo;
 Servo mainServo;
-
-#define SERVO_DROUGE_PIN PE14
-#define SERVO_MAIN_PIN PE13
 
 #define ACTUATOR_SHORT 0      // 0 mm extension 
 #define ACTUATOR_EXTENDED 180 // 100 mm extension
@@ -45,32 +68,26 @@ File dataFile;
 
 // IMU
 #include "mpu9250.h"
-#define MPU9250_CS PC2 // MPU9250_CS
-// Mpu9250 object, SPI bus, CS
 bfs::Mpu9250 imu(&SPI, MPU9250_CS);
 
-float mag_hardiron[3]; 
-float mag_softiron[9]; 
-float gyro_zerorate[3]; 
+// These are specific to each IMU and IMU encironment - 
+// Poor calibration values will prevent AHRS function
+float mag_hardiron[]  = { 6.41, 31.07, -12.36 }; // in uTesla
+float mag_softiron[]  = { 0.990, 0.007, -0.005, 0.007, 0.990, 0.010, -0.005, 0.010, 1.020 }; 
+float gyro_zerorate[] = { 0.01, -0.02, -0.01 }; // in Radians/s
 
-/*
-full scale ±4800μT
-±250, ±500, ±1000, and ±2000°/sec (dps)
-±2g, ±4g, ±8g, and ±16g
-*/
-
+#include "quaternionFilters.h"
 #define MPS2_TO_G 9.80665
 #define RAD_TO_DEG 57.2958
-#include "quaternionFilters.h"
 
-// Control variables
-unsigned long missionStart_ms;
-unsigned long missionElapsedTime_ms;
+// Control/state variables
+unsigned long missionStart_ms = 0;
+unsigned long missionElapsedTime_ms = 0;
 
 bool status_on_pad = true;
 bool status_ascent = false;
 bool status_apogee = false;
-bool status_main = false;
+bool status_main   = false;
 
 bool boot_failed = false;
 String master_fail_reason = "";
@@ -85,15 +102,15 @@ float pressure_noisy_mbar = 0;
 float pressure_noise = 0;
 float AGL_m = 0;
 
+float total_acceleration_now_G = 0.0;
+
 int IMU_LAST_READ = 0;
 
-// FLIGHT CONFIGURATION
-float emergency_AGL_deploy_everything_m = 200.0; // meters
-// MEL = mission elapsed time
-int failsafe_MEL_deploy_drouge_ms = 10000; // 10 seconds
-int failsafe_MEL_deploy_main_ms = 15000; // 15 seconds
-float launch_threshold_noise = 0.7;
-float apogee_threshold_noise = 0.2;
+#include "RunningAverage.h"
+// used for basic pressure averaging
+RunningAverage pressure_AVE10_mbar(10);
+// used for basic acceleration averaging
+RunningAverage acceleration_AVE10_g(10);
 
 // Given a pressure measurement (mbar) and the pressure at a baseline (mbar),
 // return altitude (in meters) for the delta in pressures.
@@ -101,17 +118,6 @@ double pressureToAGL_m(double currentPressure_mbar, double baselinePressure_mbar
 {
   return(44330.0*(1-pow(currentPressure_mbar/baselinePressure_mbar,1/5.255)));
 }
-
-  enum AccelRange : int8_t {
-    ACCEL_RANGE_2G = 0x00,
-    ACCEL_RANGE_4G = 0x08,
-    ACCEL_RANGE_8G = 0x10,
-    ACCEL_RANGE_16G = 0x18
-  };
-
-// Battery Voltage Sense
-#define BATT_VOLT_SENS PA2
-#define VDD_5V_SENS PA4
 
 void getVoltages(float &battery_V, float &VDD_Bus_V)
 {
@@ -136,31 +142,6 @@ void getVoltages(float &battery_V, float &VDD_Bus_V)
 }
 
 void setup() {
-
-// in uTesla
-  mag_hardiron[0] =   6.41; // -3.35;
-  mag_hardiron[1] =  31.07; // -0.74;
-  mag_hardiron[2] = -12.36; //-40.79;
-
-  // in uTesla
-  mag_softiron[0] =  0.990; //0.965;
-  mag_softiron[1] =  0.007; //0.018;
-  mag_softiron[2] = -0.005; //0.010;  
-  mag_softiron[3] =  0.007; //0.018;
-  mag_softiron[4] =  0.990; //0.960;
-  mag_softiron[5] =  0.010; //0.003;  
-  mag_softiron[6] = -0.005; //0.010;
-  mag_softiron[7] =  0.010; //0.003;
-  mag_softiron[8] =  1.020; //1.080;  
-
-  // in Radians/s
-  gyro_zerorate[0] =   0.01; // 0.05;
-  gyro_zerorate[1] = - 0.02; //-0.01;
-  gyro_zerorate[2] = - 0.01; //-0.01;
-
-    // float gx = imu.gyro_x_radps() + 0.01;
-    // float gy = imu.gyro_y_radps() - 0.02;
-    // float gz = imu.gyro_z_radps() - 0.01;
 
   // initialize LED control pins
   pinMode(LED_GREEN, OUTPUT);
@@ -198,7 +179,6 @@ void setup() {
   /* Set the gyro range to 2000DPS by default*/
   /* Set the DLPF to 184HZ by default */
   /* Set the SRD to 0 by default */
-
   /* Set the IMU sample rate divider */
   /* Set sample rate divider for 50 Hz */
   /* rate_Hz = 1000 / (srd + 1) */
@@ -207,14 +187,6 @@ void setup() {
     Serial.println("Error configuring SRD");
     while(1) {}
   }
-/*
-  enum AccelRange : int8_t {
-    ACCEL_RANGE_2G = 0x00,
-    ACCEL_RANGE_4G = 0x08,
-    ACCEL_RANGE_8G = 0x10,
-    ACCEL_RANGE_16G = 0x18
-  };
-  */
 
   if (!imu.ConfigAccelRange(bfs::Mpu9250::ACCEL_RANGE_16G)) {
     Serial.println("Error configuring Accel Range");
@@ -279,11 +251,11 @@ void setup() {
 
   getVoltages(battery_V, VDD_Bus_V);
 
-  // if(battery_V < 7.6) {
-  //   boot_failed = true;
-  //   Serial.println("BOOT Failed: Battery Voltage Too Low");
-  //   master_fail_reason += "batteryVoltageTooLow;";
-  // }
+  if(battery_V < 7.6) {
+    boot_failed = true;
+    Serial.println("BOOT Failed: Battery Voltage Too Low");
+    master_fail_reason += "batteryVoltageTooLow;";
+  }
 
   if(VDD_Bus_V < 4.5) {
     boot_failed = true;
@@ -309,11 +281,8 @@ void setup() {
 
   // Init the Actuators - we want them to be 
   // compact (SHORT) so the rocket can be assembled
-  //drougeServo.write(ACTUATOR_SHORT);
-
-  drougeServo.write(180);
-
-  //mainServo.write(ACTUATOR_SHORT);
+  drougeServo.write(ACTUATOR_SHORT);
+  mainServo.write(ACTUATOR_SHORT);
 
   Serial.print("Initializing SD card... ");
   while (!SD.begin())
@@ -357,13 +326,14 @@ void loop() {
 
   if(boot_failed) {
     digitalWrite(LED_RED, LOW); // Red on
-    return;
+    //return;
+  } else {
+    digitalWrite(LED_GREEN, LOW); // ON
   }
 
   delay(20); // main loop runs at 50Hz
-  digitalWrite(LED_GREEN, LOW); // ON
 
-  // Integrity counter
+  // System Heartbeat
   masterCount++;
   String dataLog = String("DATA:") + String(masterCount);
   String eventLog = String("EVENT:") + String(masterCount);
@@ -391,7 +361,7 @@ void loop() {
   }
 
   // Failsafe 3 - We launched AND the sensor is quiet AND we are close to the ground
-  if(missionElapsedTime_ms > 0 && pressure_noise < apogee_threshold_noise && AGL_m < emergency_AGL_deploy_everything_m) {
+  if(missionElapsedTime_ms > 0 && total_acceleration_now_G < apogee_threshold_accel_G && AGL_m < emergency_AGL_deploy_everything_m) {
     // pop everything
     // this will (probably) "double actuate" the drouge and main servos but that's fine
     drougeServo.write(ACTUATOR_EXTENDED); 
@@ -412,19 +382,23 @@ void loop() {
 
   // Altimeter; Pressure, Noise, and AGL math
   int result = MS5611_SPI.read(12); 
+
   temperature_C = MS5611_SPI.getTemperature();
   pressure_noisy_mbar = MS5611_SPI.getPressure();
+  
   pressure_AVE10_mbar.addValue(pressure_noisy_mbar);
+
   pressure_now_mbar = pressure_AVE10_mbar.getAverage();
-  AGL_m = pressureToAGL_m(pressure_now_mbar, pressure_pad_mbar);
   pressure_noise = pressure_AVE10_mbar.getStandardDeviation();
 
+  AGL_m = pressureToAGL_m(pressure_now_mbar, pressure_pad_mbar);
+  
   dataLog += String(",TC_ALT:") + String(temperature_C) + String(",P:") + String(pressure_noisy_mbar);
   dataLog += String(",AGL:") + String(AGL_m) + String(",NOISE:") + String(pressure_noise);
   
   // IMU
   if (imu.Read()) {
-    
+    // NOTE: Below comment copied from MPU9250 Basic Example Code written by Kris Winer
     // Sensors x (y)-axis of the accelerometer is aligned with the y (x)-axis of
     // the magnetometer; the magnetometer z-axis (+ down) is opposite to z-axis
     // (+ up) of accelerometer and gyro! We have to make some allowance for this
@@ -437,30 +411,19 @@ void loop() {
     float imu_dt_s = float(time_now_ms - IMU_LAST_READ) / 1000;
     Serial.print("DT(s):");
     Serial.println(imu_dt_s);
-    // TODO: Calibrate/zero/convert the raw accelerometer data
-    // This depends on scale being set
-    // values seem too big by a factor of 10?
+
     float ax_G = imu.accel_x_mps2() / MPS2_TO_G;
     float ay_G = imu.accel_y_mps2() / MPS2_TO_G;
     float az_G = imu.accel_z_mps2() / MPS2_TO_G;
     
-    // TODO: Calibrate/zero/convert the raw gyro data
-    // This depends on scale being set
+    float totalAccel = sqrt(ax_G*ax_G + ay_G*ay_G + az_G*az_G);
+    acceleration_AVE10_g.addValue(totalAccel);
+    total_acceleration_now_G = acceleration_AVE10_g.getAverage();
+
     float gx = imu.gyro_x_radps() + gyro_zerorate[0];
     float gy = imu.gyro_y_radps() + gyro_zerorate[1];
     float gz = imu.gyro_z_radps() + gyro_zerorate[2];
-    
-    // TODO: Calibrate/zero/convert the magnetometer values
-    // Include factory calibration per data sheet and user environmental
-    // corrections
-    // Get actual magnetometer value, this depends on scale being set
-    // myIMU.mx = (float)myIMU.magCount[0] * myIMU.mRes
-    //            * myIMU.factoryMagCalibration[0] - myIMU.magBias[0];
-    // myIMU.my = (float)myIMU.magCount[1] * myIMU.mRes
-    //            * myIMU.factoryMagCalibration[1] - myIMU.magBias[1];
-    // myIMU.mz = (float)myIMU.magCount[2] * myIMU.mRes
-    //            * myIMU.factoryMagCalibration[2] - myIMU.magBias[2];
-    
+        
     // hard iron cal
     float mx = imu.mag_x_ut() - mag_hardiron[0];
     float my = imu.mag_y_ut() - mag_hardiron[1];
@@ -473,51 +436,19 @@ void loop() {
 
     IMU_LAST_READ = time_now_ms;
 
-  // 'Raw' values to match expectation of MotionCal
-  // accel_event.acceleration.z*8192/9.8)
-  // MotionCal expects units of G's, DPS, and uT
-  /*
-Raw: 36, -72, 8412, -8, 0, -3, -415, -310, 687
-Raw: 52, -72, 8420, -6, 0, -1, - 424, -325, 673
-
-the third number is so big because that's gravity....
-
-*/
-  Serial.print("Raw:");
-  Serial.print(int(ax_G*10000)); Serial.print(","); // this looks like mG?
-  Serial.print(int(ay_G*10000)); Serial.print(",");
-  Serial.print(int(az_G*10000)); Serial.print(",");
-  Serial.print(int(gx*RAD_TO_DEG)); Serial.print(","); // Deg resolution, that's ok
-  Serial.print(int(gy*RAD_TO_DEG)); Serial.print(",");
-  Serial.print(int(gz*RAD_TO_DEG)); Serial.print(",");
-  Serial.print(int(mx*10)); Serial.print(","); // uT*10
-  Serial.print(int(my*10)); Serial.print(",");
-  Serial.print(int(mz*10)); Serial.println("");
-
-  // unified data
-  Serial.print("Uni:");
-  Serial.print(ax_G); Serial.print(",");
-  Serial.print(ay_G); Serial.print(",");
-  Serial.print(az_G); Serial.print(",");
-  Serial.print(gx, 4); Serial.print(",");
-  Serial.print(gy, 4); Serial.print(",");
-  Serial.print(gz, 4); Serial.print(",");
-  Serial.print(mxCal); Serial.print(",");
-  Serial.print(myCal); Serial.print(",");
-  Serial.print(mzCal); Serial.println("");
-
     MahonyQuaternionUpdate(ax_G, ay_G, az_G, gx, gy, gz, mxCal, myCal, mzCal, imu_dt_s);
 
-    Serial.print("q0 = ");  Serial.print(*getQ());
-    Serial.print(" qx = "); Serial.print(*(getQ() + 1));
-    Serial.print(" qy = "); Serial.print(*(getQ() + 2));
-    Serial.print(" qz = "); Serial.println(*(getQ() + 3));
+    // Serial.print("q0 = ");  Serial.print(*getQ());
+    // Serial.print(" qx = "); Serial.print(*(getQ() + 1));
+    // Serial.print(" qy = "); Serial.print(*(getQ() + 2));
+    // Serial.print(" qz = "); Serial.println(*(getQ() + 3));
 
     dataLog += String(",AX:") + String(ax_G) + String(",AY:") + String(ay_G) + String(",AZ:") + String(az_G);
     dataLog += String(",GX:") + String(gx) + String(",GY:") + String(gy) + String(",GZ:") + String(gz);
     dataLog += String(",MX:") + String(mxCal) + String(",MY:") + String(myCal) + String(",MZ:") + String(mzCal);
     dataLog += String(",TC_IMU:") + String(imu.die_temp_c());
   
+    // NOTE: Below comment copied from MPU9250 Basic Example Code written by Kris Winer
     // Define output variables from updated quaternion---these are Tait-Bryan
     // angles, commonly used in aircraft orientation. In this coordinate system,
     // the positive z-axis is down toward Earth. Yaw is the angle between Sensor
@@ -545,11 +476,6 @@ the third number is so big because that's gravity....
                   * *(getQ()+1) - *(getQ()+2) * *(getQ()+2) + *(getQ()+3)
                   * *(getQ()+3));
   
-    // Declination of SparkFun Electronics (40°05'26.6"N 105°11'05.9"W) is
-    //   8° 30' E  ± 0° 21' (or 8.5°) on 2016-07-19
-    // - http://www.ngdc.noaa.gov/geomag-web/#declination
-    //myIMUyaw -= 8.5;
-
     Serial.print("Yaw, Pitch, Roll: ");
     Serial.print(myIMUyaw *= RAD_TO_DEG, 2);
     Serial.print(", ");
@@ -578,20 +504,18 @@ the third number is so big because that's gravity....
   // On the pad, the pressure will be very stable
   // although it might drift slightly due to weather 
   // changes or brutal sun
+  // The acceleration will also be very stable except 
+  // for transients when people close access doors etc.
+  // or wind
   if(status_on_pad) {
-    if(pressure_noise <= launch_threshold_noise) {
+    if(total_acceleration_now_G <= launch_threshold_accel_G) {
       // we are on the pad and life is boring...
       eventLog += String(",STATUS:ON_PAD");
-    } else if (pressure_noise > launch_threshold_noise) {
+    } else if (total_acceleration_now_G > launch_threshold_accel_G) {
       // we just took off
       // this value should be tuned to your sensor and anticipated/measured
       // signal during early ascent
       // NOTE - this calculation will fail for very slow ascent rate (e.g. weather ballons) 
-      // and/or very high initial launch pad levels
-      // Examples 
-      // for a pad at MSL and an initial ascent rate of 200m/s we expect noise > 3
-      // for a pad at MSL and an initial ascent rate of 100m/s we expect noise > 1.5
-      // at 10,000 ft and initial ascent rate of 20m/s we expect noise of ~0.1
       status_on_pad = false;
       status_ascent = true;
       missionStart_ms = millis();
@@ -613,12 +537,26 @@ the third number is so big because that's gravity....
     if (pressure_noise >= apogee_threshold_noise) {
       // we are still ascending - pressure continues to be 
       // unreliable 
-      eventLog += String(",STATUS:ASCENDING");     
+      eventLog += String(",STATUS:P_ASCENDING");     
     } else if (pressure_noise < apogee_threshold_noise) {
-      // we are either extremely high up, or moving slowly as we approach apogee
+      // We are either extremely high up, or moving slowly as we approach apogee
       // at this point the altimeter is reliable
       // Obviously you will need to customize these values to your flight profile
-      eventLog += String(",EVENT:APOGEE_DROUGE_EXTEND"); 
+      eventLog += String(",EVENT:P_APOGEE_DROUGE_EXTEND"); 
+      status_apogee = true;
+      drougeServo.write(ACTUATOR_EXTENDED);
+    }
+  }
+
+  // We are ascending. Secondary Apogee detect via dip in acceleration as rocket
+  // is coasting to apogee. For a moment the rocket will experience almost zero G.
+  if(status_ascent) {
+    if (total_acceleration_now_G >= apogee_threshold_accel_G) {
+      // we are still ascending
+      eventLog += String(",STATUS:G_ASCENDING");     
+    } else if (total_acceleration_now_G < apogee_threshold_accel_G) {
+      // Obviously you will need to customize these values to your flight profile
+      eventLog += String(",EVENT:G_APOGEE_DROUGE_EXTEND"); 
       status_apogee = true;
       drougeServo.write(ACTUATOR_EXTENDED);
     }
@@ -639,7 +577,7 @@ the third number is so big because that's gravity....
     dataFile.println(eventLog);
     dataFile.flush();        // use flush to ensure the data are written
     Serial.println(dataLog); // print to the serial port too
-    //Serial.println(eventLog);
+    Serial.println(eventLog);
   }
 
   digitalWrite(LED_GREEN, HIGH);
