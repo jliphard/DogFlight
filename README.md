@@ -2,14 +2,13 @@
 
 PixRacer Firmware for High Power Rockets with Actuator Dual Deploy and AHRS 
 
-- [DogFlight](#dogflight)
-  * [Motivation](#motivation)
-  * [Is writing your own firmware for amateur high power rockets a good idea?](#is-writing-your-own-firmware-for-amateur-high-power-rockets-a-good-idea-)
-  * [PixHawk and PixRacer drone controllers as rocket flight controllers](#pixhawk-and-pixracer-drone-controllers-as-rocket-flight-controllers)
-  * [Programming the PixHawk/PixRacer](#programming-the-pixhawk-pixracer)
-  * [AHRS (attitude and heading reference system)](#ahrs--attitude-and-heading-reference-system-)
-  * [AHRS calibration](#ahrs-calibration)
-  * [Dual Deploy Software Settings](#dual-deploy-software-settings)
+* [Motivation](#motivation)
+* [Is writing your own firmware for amateur high power rockets a good idea?](#is-writing-your-own-firmware-for-amateur-high-power-rockets-a-good-idea-)
+* [PixHawk and PixRacer drone controllers as rocket flight controllers](#pixhawk-and-pixracer-drone-controllers-as-rocket-flight-controllers)
+* [Programming the PixHawk/PixRacer](#programming-the-pixhawk-pixracer)
+* [AHRS (attitude and heading reference system)](#ahrs--attitude-and-heading-reference-system-)
+* [AHRS calibration](#ahrs-calibration)
+* [Dual Deploy Software Settings](#dual-deploy-software-settings)
   
 ## Motivation
 
