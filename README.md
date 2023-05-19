@@ -5,9 +5,10 @@ PixRacer Firmware for High Power Rockets with Actuator Dual Deploy and AHRS
 * [Motivation](#motivation)
 * [Is writing your own firmware for amateur high power rockets a good idea?](#is-writing-your-own-firmware-for-amateur-high-power-rockets-a-good-idea-)
 * [PixHawk and PixRacer drone controllers as rocket flight controllers](#pixhawk-and-pixracer-drone-controllers-as-rocket-flight-controllers)
-* [Programming the PixHawk/PixRacer](#programming-the-pixhawk-pixracer)
+* [Arduino; Programming the PixHawk/PixRacer](#arduino--programming-the-pixhawk-pixracer)
 * [AHRS (attitude and heading reference system)](#ahrs--attitude-and-heading-reference-system-)
 * [AHRS calibration](#ahrs-calibration)
+* [Dual Deploy Hardware - Linear Actuators](#dual-deploy-hardware---linear-actuators)
 * [Dual Deploy Software Settings](#dual-deploy-software-settings)
   
 ## Motivation
@@ -76,19 +77,28 @@ The core of the actuator based dual deploy system are two linear actuators, the 
 These are self explanatory - please see `/DogFlight/DogFlight.ino`. You will need to change them based on your launch site and expected flight and recovery profile. 
 
 ```c++
+
 // ****************************************
 // FLIGHT CONFIGURATION
 // NOTE: MEL = mission elapsed time
 // MEL starts from zero at launch detection
+int failsafe_MEL_deploy_drouge_ms =  22000;
+int failsafe_MEL_deploy_main_ms   = 127000;
 
-float emergency_AGL_deploy_everything_m = 400.0;
-// high value due to lag time of Actuonix L12-100
+// Everything should be deployed at this AGL
+// Uses altimeter data
+float deploy_everything_AGL_m = 400.0;
 
-int failsafe_MEL_deploy_drouge_ms = 10000;
-int failsafe_MEL_deploy_main_ms   = 15000;
+// Accelerometer data
+// For launch detect and primary apogee detect
+float launch_threshold_accel_G = 5.0;
+float apogee_threshold_accel_G = 1.0;
+// these values refer to the "total" acceleration,
+// which is always positive
+// total_A = SQRT(ax^2+ay^2+az^2)
 
-float launch_threshold_accel_G = 3.0;
-float apogee_threshold_accel_G = 0.3;
-
+// Altimeter noise
+// Used for secondary apogee detection
 float apogee_threshold_noise   = 0.2;
+
 ```
