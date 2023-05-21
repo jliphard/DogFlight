@@ -13,6 +13,7 @@
 // MEL starts from zero at launch detection
 int failsafe_MEL_deploy_drouge_ms =  22000;
 int failsafe_MEL_deploy_main_ms   = 127000;
+int post_Burnout_Lockout_ms       =   3000;
 
 // Everything should be deployed at this AGL
 // Uses altimeter data
@@ -20,15 +21,15 @@ float deploy_everything_AGL_m = 400.0;
 
 // Accelerometer data
 // For launch detect and primary apogee detect
-float launch_threshold_accel_G = 5.0;
-float apogee_threshold_accel_G = 1.0;
+float launch_threshold_accel_g = 5.0;
+float apogee_threshold_accel_g = 1.0;
 // these values refer to the "total" acceleration,
 // which is always positive
 // total_A = SQRT(ax^2+ay^2+az^2)
 
 // Altimeter noise
 // Used for secondary apogee detection
-float apogee_threshold_noise   = 0.2;
+float apogee_threshold_noise = 0.2;
 
 // ****************************************
 // Hardware configuration
@@ -91,12 +92,17 @@ float gyro_zerorate[] = { 0.01, -0.02, -0.01 }; // in Radians/s
 
 // Control/state variables
 unsigned long missionStart_ms = 0;
+unsigned long missionBurnout_ms = 0;
 unsigned long missionElapsedTime_ms = 0;
+unsigned long timeSinceBurnout_ms = 0;
 
-bool state_on_pad = true;
-bool state_ascent = false;
-bool state_apogee = false;
-bool state_main   = false;
+enum FlightState: uint8_t {
+  ON_PAD = 0,
+  MOTOR_BURNING = 1,
+  COASTING = 2,
+  DESCENT = 3
+};
+enum FlightState state;
 
 // hardware errors
 bool altimeter_failed = false;
@@ -117,15 +123,15 @@ float pressure_noise        = 0;
 float AGL_m                 = 0;
 
 // Accelerometer data
-float total_acceleration_200msRA_G = 0.0;
+float acceleration_Total_200msRA_g = 0.0;
+float acceleration_RollAxis_400msRA_g = 0.0;
 int IMU_LAST_READ = 0;
 
 // Averaging datastructures
 #include "RunningAverage.h"
-// basic pressure averaging
-RunningAverage pressure_AVE10_mbar(10);
-// basic acceleration averaging
-RunningAverage acceleration_AVE10_g(10);
+RunningAverage pressure_10_mbar(10);
+RunningAverage acceleration_10_g(10);
+RunningAverage acceleration_RollAxis_20_g(20);
 
 // Given a pressure measurement (mbar) and the pressure at a baseline (mbar),
 // return altitude (in meters) for the delta in pressures.
@@ -221,29 +227,37 @@ void setup() {
     while (1);
   }
 
-  // Clear main Pressure averaging array
-  pressure_AVE10_mbar.clear();
+  // Timers and mission time and state
+  missionStart_ms = 0;
+  missionElapsedTime_ms = 0;
+  state = ON_PAD;
+  masterCount = 0; // integer watchdog counter
+
+  // Clear averaging arrays
+  pressure_10_mbar.clear();
+  acceleration_10_g.clear();
+  acceleration_RollAxis_20_g.clear();
 
   // collect pressure data for 2 seconds
   for(int i=0; i<40; i++){
     // yup, this will discard the first 30 readings - which is what we want
     int result = MS5611_SPI.read(12);
-    pressure_AVE10_mbar.addValue(MS5611_SPI.getPressure());
+    pressure_10_mbar.addValue(MS5611_SPI.getPressure());
     delay(50);
   }
 
-  pressure_pad_mbar = pressure_AVE10_mbar.getAverage();
+  pressure_pad_mbar = pressure_10_mbar.getAverage();
   Serial.println("Pad Pressure (mbar): ");
   Serial.println(pressure_pad_mbar);
 
-  if(pressure_AVE10_mbar.getStandardDeviation() < 0.001) {
+  if(pressure_10_mbar.getStandardDeviation() < 0.001) {
     boot_failed = true;
     altimeter_failed = true;
     Serial.println("BOOT Failed: Pressure Too Quiet");
     master_fail_reason += "padpPressureTooQuiet;";
   }
 
-  if(pressure_AVE10_mbar.getStandardDeviation() > 0.1) {
+  if(pressure_10_mbar.getStandardDeviation() > 0.1) {
     boot_failed = true;
     Serial.println("BOOT Failed: Pad Barometric Pressure Not Stable");
     master_fail_reason += "padPressureNotStable;";
@@ -261,10 +275,6 @@ void setup() {
     master_fail_reason += "padElevationTooHigh;";
   }
 
-  // Timers and mission time
-  missionStart_ms = 0;
-  missionElapsedTime_ms = 0;
-
   getVoltages(battery_V, VDD_Bus_V);
 
   if(battery_V < 7.6) {
@@ -279,9 +289,7 @@ void setup() {
     master_fail_reason += "5V_VDD_BUS_VoltageTooLow;";
   }
 
-  masterCount = 0;
-
-  // Connect to the Drouge and Main Actuators
+  // Connect the Drouge and Main Actuators
   /*
     For the Actuonix L12-100-100-6-R, a 1.0 ms pulse commands the controller to fully retract the actuator, 
     and a 2.0 ms pulse signals it to fully extend (i.e. correct settings are 1000 and 2000). 
@@ -359,7 +367,7 @@ void loop() {
     // pop the drouge after failsafe_MEL_deploy_drouge_ms mission time
     // customize based on your anticipated flight profile
     // this will (probably) "double actuate" the drouge servo but that's fine
-    state_apogee = true; // redundant state change to prepare system to pop main
+    state = DESCENT; // redundant state change to prepare system to pop main
     drougeServo.write(ACTUATOR_EXTENDED);
     eventLog += String(",FS1_DS_EXTENDED");
   }
@@ -377,7 +385,7 @@ void loop() {
 
   // Failsafe 3 - We launched AND accleration is small AND we are close to the ground
   if(missionElapsedTime_ms > 0 && 
-      total_acceleration_200msRA_G < apogee_threshold_accel_G && 
+      acceleration_Total_200msRA_g < apogee_threshold_accel_g && 
       AGL_m < deploy_everything_AGL_m) {
     // pop everything
     // this will (probably) "double actuate" the drouge and main servos but that's fine
@@ -402,10 +410,10 @@ void loop() {
 
   temperature_C = MS5611_SPI.getTemperature();
   pressure_raw_mbar = MS5611_SPI.getPressure();
-  pressure_AVE10_mbar.addValue(pressure_raw_mbar);
+  pressure_10_mbar.addValue(pressure_raw_mbar);
 
-  pressure_200msRA_mbar = pressure_AVE10_mbar.getAverage();
-  pressure_noise = pressure_AVE10_mbar.getStandardDeviation();
+  pressure_200msRA_mbar = pressure_10_mbar.getAverage();
+  pressure_noise = pressure_10_mbar.getStandardDeviation();
 
   AGL_m = pressureToAGL_m(pressure_200msRA_mbar, pressure_pad_mbar);
   
@@ -433,9 +441,14 @@ void loop() {
     float ay_G = imu.accel_y_mps2() / MPS2_TO_G;
     float az_G = imu.accel_z_mps2() / MPS2_TO_G;
     
+    // this will differ from rocket to rocket
+    // specify roll axis here and check signs
+    acceleration_RollAxis_20_g.addValue(ax_G);
+    acceleration_RollAxis_400msRA_g = acceleration_RollAxis_20_g.getAverage();
+
     float totalAccel = sqrt(ax_G*ax_G + ay_G*ay_G + az_G*az_G);
-    acceleration_AVE10_g.addValue(totalAccel);
-    total_acceleration_200msRA_G = acceleration_AVE10_g.getAverage();
+    acceleration_10_g.addValue(totalAccel);
+    acceleration_Total_200msRA_g = acceleration_10_g.getAverage();
 
     float gx = imu.gyro_x_radps() + gyro_zerorate[0];
     float gy = imu.gyro_y_radps() + gyro_zerorate[1];
@@ -513,63 +526,79 @@ void loop() {
   // The acceleration will also be very stable except 
   // for transients when people close access doors etc.
   // or wind
-  if(state_on_pad) {
-    if(total_acceleration_200msRA_G <= launch_threshold_accel_G) {
+  if(state == ON_PAD) {
+    if(acceleration_RollAxis_400msRA_g <= launch_threshold_accel_g) {
       // we are on the pad and life is boring...
       eventLog += String(",STATUS:ON_PAD");
-    } else if (total_acceleration_200msRA_G > launch_threshold_accel_G) {
+    } else if (acceleration_RollAxis_400msRA_g > launch_threshold_accel_g) {
       // we just took off
       // this value should be tuned to your sensor and anticipated/measured
       // signal during early ascent
-      // This calculation will fail for very slow ascent rate (e.g. weather ballons) 
-      state_on_pad = false;
-      state_ascent = true;
+      // Will fail for very slow ascent rates 
+      state = MOTOR_BURNING;
       missionStart_ms = millis();
       eventLog += String(",EVENT:LAUNCH");
     }
   }
 
-  if(!state_on_pad) {
+  if(state != ON_PAD) {
     missionElapsedTime_ms = millis() - missionStart_ms;
   }
   dataLog += String(",MEL:") + String(missionElapsedTime_ms);
 
-  // We are ascending. Primary Apogee detect via dip in acceleration as rocket
-  // is coasting to apogee. For a moment the rocket will experience almost zero G.
-  if(state_ascent) {
-    if (total_acceleration_200msRA_G >= apogee_threshold_accel_G) {
+  // We are ascending; motor is burning. Detect motor burnout. 
+  // Roll axis g will immediately cross zero and go negative due to 
+  // aerodynmic drag opposing forward motion of rocket.
+  // Cp is moving towards the base of the rocket and 
+  // then flipping e.g. past Mach 1.5 
+  // Altimeter readings are unreliable
+  if(state == MOTOR_BURNING) {
+    if (acceleration_RollAxis_400msRA_g < 0.0) {
+      // burnout; roll axis acceleration goes from >> 0 to < 0
+      state = COASTING;
+      missionBurnout_ms = millis();
+      eventLog += String(",STATUS:BURNOUT");     
+    }
+  }
+
+  if(state == COASTING) {
+    timeSinceBurnout_ms = millis() - missionBurnout_ms;
+  }
+  dataLog += String(",TSB:") + String(timeSinceBurnout_ms);
+
+  // PRIMARY APOGEE DETECTION
+  // Use dip in acceleration as rocket coasts to, and reaches,
+  // apogee. For a moment the rocket will experience almost zero G.
+  if(state == COASTING && timeSinceBurnout_ms > post_Burnout_Lockout_ms) {
+    // look for apogee
+    if (acceleration_Total_200msRA_g >= apogee_threshold_accel_g) {
       // we are still ascending
-      eventLog += String(",STATUS:G_ASCENDING");     
-    } else if (total_acceleration_200msRA_G < apogee_threshold_accel_G) {
+      eventLog += String(",STATUS:G_STILL_ASCENDING");     
+    } else if (acceleration_Total_200msRA_g < apogee_threshold_accel_g) {
       // Obviously you will need to customize these values to your flight profile
       eventLog += String(",EVENT:G_APOGEE_DROUGE_EXTEND"); 
-      state_apogee = true;
+      state = DESCENT;
       drougeServo.write(ACTUATOR_EXTENDED);
     }
   }
 
-  // Secondary apogee detection 
-  // We are ascending and Mach number is increasing  
-  // Cp is moving towards the base of the rocket and then flipping e.g. past Mach 1.5 
-  // Altimeter readings are unreliable 
-  // Other factors to consider include how the altimeter is mounted 
-  // relative to the G loads
-  if(state_ascent && !altimeter_failed) {
+  // SECONDARY APOGEE DETECTION 
+  if(state == COASTING && timeSinceBurnout_ms > post_Burnout_Lockout_ms) {
     if (pressure_noise >= apogee_threshold_noise) {
       // We are still ascending 
       // Altimeter continues to be unreliable 
-      eventLog += String(",STATUS:P_ASCENDING");     
+      eventLog += String(",STATUS:P_STILL_ASCENDING");     
     } else if (pressure_noise < apogee_threshold_noise) {
       // We are either extremely high up or moving slowly as we approach apogee
       // At this point the altimeter is reliable
       // Customize these values to your flight profile
       eventLog += String(",EVENT:P_APOGEE_DROUGE_EXTEND"); 
-      state_apogee = true;
+      state = DESCENT;
       drougeServo.write(ACTUATOR_EXTENDED);
     }
   }
 
-  if(state_apogee) {
+  if(state == DESCENT) {
     // the drouge should be out and we should be descending
     // goal now is to pop the main chute at deploy_everything_AGL_m 
     // (e.g. 200m)

@@ -84,6 +84,7 @@ These are self explanatory - please see `/DogFlight/DogFlight.ino`. You will nee
 // MEL starts from zero at launch detection
 int failsafe_MEL_deploy_drouge_ms =  22000;
 int failsafe_MEL_deploy_main_ms   = 127000;
+int post_Burnout_Lockout_ms       =   3000;
 
 // Everything should be deployed at this AGL
 // Uses altimeter data
@@ -99,6 +100,6 @@ float apogee_threshold_accel_G = 1.0;
 
 // Altimeter noise
 // Used for secondary apogee detection
-float apogee_threshold_noise   = 0.2;
+float apogee_threshold_noise = 0.2;
 
 ```
