@@ -92,8 +92,8 @@ float deploy_everything_AGL_m = 400.0;
 
 // Accelerometer data
 // For launch detect and primary apogee detect
-float launch_threshold_accel_G = 5.0;
-float apogee_threshold_accel_G = 1.0;
+float launch_threshold_accel_g = 5.0;
+float apogee_threshold_accel_g = 1.0;
 // these values refer to the "total" acceleration,
 // which is always positive
 // total_A = SQRT(ax^2+ay^2+az^2)
